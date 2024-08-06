@@ -131,8 +131,7 @@ class VidLooper(object):
                 # Start a new video player process, capture STDOUT to keep the
                 # screen clear. Set a session ID (os.setsid) to allow us to kill
                 # the whole video player process tree.
-                os.environ['DISPLAY'] = "0"
-                cmd = ['cvlc', '-f']
+                cmd = ['env', 'DISPLAY=0','cvlc', '-f']
                 if self.loop:
                     cmd += ['-L']
                 if self.no_osd:
