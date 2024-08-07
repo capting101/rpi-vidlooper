@@ -138,6 +138,7 @@ class VidLooper(object):
                     cmd += ['--no-osd']
                 self._p = Popen(cmd + [filename],
                                 stdout=None if self.debug else PIPE,
+                                bufsize=1,
                                 preexec_fn=os.setsid)
                 self._active_vid = filename
 
