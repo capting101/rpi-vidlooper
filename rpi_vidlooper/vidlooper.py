@@ -1,17 +1,16 @@
 #!/usr/bin/python
 
 # Raspberry Pi GPIO-controlled video looper
-# Copyright (c) 2019 Alex Lubbock
-# License MIT
+# Modified to use python-vlc instead of omxplayer
 
 import RPi.GPIO as GPIO
 import os
 import sys
-from subprocess import Popen, PIPE, call
 import time
 from threading import Lock
 import signal
 import argparse
+import vlc
 
 
 class _GpioParser(argparse.Action):
@@ -55,28 +54,18 @@ class VidLooper(object):
         6: 12
     }
 
-    # Use this lock to avoid multiple button presses updating the player
-    # state simultaneously
     _mutex = Lock()
-
-    # The currently playing video filename
     _active_vid = None
-
-    # The process of the active video player
-    _p = None
+    _player = None
 
     def __init__(self, audio='hdmi', autostart=True, restart_on_press=False,
                  video_dir=os.getcwd(), videos=None, gpio_pins=None, loop=True,
                  no_osd=False, shutdown_pin=None, splash=None, debug=False):
-        # Use default GPIO pins, if needed
         if gpio_pins is None:
             gpio_pins = self._GPIO_PIN_DEFAULT.copy()
         self.gpio_pins = gpio_pins
-
-        # Add shutdown pin
         self.shutdown_pin = shutdown_pin
 
-        # Assemble the list of videos to play, if needed
         if videos:
             self.videos = videos
             for video in videos:
@@ -90,15 +79,11 @@ class VidLooper(object):
                 raise Exception('No videos found in "{}". Please specify a different '
                                 'directory or filename(s).'.format(video_dir))
 
-        # Check that we have enough GPIO input pins for every video
-        assert len(videos) <= len(self.gpio_pins), \
+        assert len(self.videos) <= len(self.gpio_pins), \
             "Not enough GPIO pins configured for number of videos"
 
         self.debug = debug
-
-        assert audio in ('hdmi', 'local', 'both'), "Invalid audio choice"
         self.audio = audio
-
         self.autostart = autostart
         self.restart_on_press = restart_on_press
         self.loop = loop
@@ -106,19 +91,17 @@ class VidLooper(object):
         self.splash = splash
         self._splashproc = None
 
+        self._instance = vlc.Instance('--aout={}'.format(self.audio))
+        self._player = self._instance.media_player_new()
+
     def _kill_process(self):
-        """ Kill a video player process. SIGINT seems to work best. """
-        if self._p is not None:
-            os.killpg(os.getpgid(self._p.pid), signal.SIGINT)
-            self._p = None
+        """ Stop the VLC player """
+        if self._player is not None:
+            self._player.stop()
 
     def switch_vid(self, pin):
         """ Switch to the video corresponding to the shorted pin """
-
-        # Use a mutex lock to avoid race condition when
-        # multiple buttons are pressed quickly
         with self._mutex:
-            # Update the output pins' states
             for in_pin, out_pin in self.gpio_pins.items():
                 if out_pin is not None:
                     GPIO.output(out_pin,
@@ -126,20 +109,15 @@ class VidLooper(object):
 
             filename = self.videos[self.in_pins.index(pin)]
             if filename != self._active_vid or self.restart_on_press:
-                # Kill any previous video player process
                 self._kill_process()
-                # Start a new video player process, capture STDOUT to keep the
-                # screen clear. Set a session ID (os.setsid) to allow us to kill
-                # the whole video player process tree.
-                cmd = ['cvlc', '-f', ]
+                media = self._instance.media_new(filename)
+                self._player.set_media(media)
+                self._player.play()
+
                 if self.loop:
-                    cmd += ['-L']
-                if self.no_osd:
-                    cmd += ['--no-osd']
-                self._p = Popen(cmd + [filename],
-                                stdout=None if self.debug else PIPE,
-                                bufsize=1,
-                                preexec_fn=os.setsid)
+                    self._player.set_media(media)
+                    self._player.get_media().add_option("input-repeat=-1")
+
                 self._active_vid = filename
 
     @property
@@ -149,12 +127,9 @@ class VidLooper(object):
 
     def start(self):
         if not self.debug:
-            # Clear the screen
             os.system('clear')
-            # Disable the (blinking) cursor
             os.system('tput civis')
 
-        # Set up GPIO
         GPIO.setmode(GPIO.BCM)
         for in_pin, out_pin in self.gpio_pins.items():
             GPIO.setup(in_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -162,7 +137,6 @@ class VidLooper(object):
                 GPIO.setup(out_pin, GPIO.OUT)
                 GPIO.output(out_pin, GPIO.LOW)
 
-        # Set up the shutdown pin
         if self.shutdown_pin:
             GPIO.setup(self.shutdown_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
             GPIO.add_event_detect(self.shutdown_pin,
@@ -175,47 +149,32 @@ class VidLooper(object):
                 self._splashproc = Popen(['fbi', '--noverbose', '-a',
                                           self.splash])
             else:
-                # Start playing first video
                 self.switch_vid(self.in_pins[0])
 
-        # Enable event detection on each input pin
         for pin in self.in_pins:
             GPIO.add_event_detect(pin, GPIO.FALLING, callback=self.switch_vid,
                                   bouncetime=self._GPIO_BOUNCE_TIME)
 
-        # Loop forever
         try:
             while True:
                 time.sleep(0.5)
                 if not self.loop:
-                    pid = -1
-                    if self._p:
-                        pid = self._p.pid
-                        self._p.communicate()
-                    if self._p:
-                        if self._p.pid == pid:
-                            # Reset LEDs
-                            for out_pin in self.gpio_pins.values():
-                                if out_pin is not None:
-                                    GPIO.output(out_pin, GPIO.LOW)
-                            self._active_vid = None
-                            self._p = None
+                    if self._player is not None and self._player.get_state() == vlc.State.Ended:
+                        for out_pin in self.gpio_pins.values():
+                            if out_pin is not None:
+                                GPIO.output(out_pin, GPIO.LOW)
+                        self._active_vid = None
 
         finally:
             self.__del__()
 
     def __del__(self):
         if not self.debug:
-            # Reset the terminal cursor to normal
             os.system('tput cnorm')
 
-        # Cleanup the GPIO pins (reset them)
         GPIO.cleanup()
-
-        # Kill any active video process
         self._kill_process()
 
-        # Kill any active splash screen
         if self._splashproc:
             os.killpg(os.getpgid(self._splashproc.pid), signal.SIGKILL)
 
@@ -231,8 +190,7 @@ The active video can optionally be indicated by an LED (one output for each
 input pin; works well with switches with built-in LEDs, but separate LEDs work
 too).
 
-This video player uses omxplayer, a hardware-accelerated video player for the
-Raspberry Pi, which must be installed separately.
+This video player uses python-vlc to control video playback.
 """
     )
     parser.add_argument('--audio', default='hdmi',
@@ -275,10 +233,8 @@ Raspberry Pi, which must be installed separately.
     parser.add_argument('--shutdown-pin', type=int, default=None,
                         help='GPIO pin to trigger system shutdown (default None)')
 
-    # Invoke the videoplayer
     args = parser.parse_args()
 
-    # Apply any countdown
     countdown = args.countdown
 
     while countdown > 0:
