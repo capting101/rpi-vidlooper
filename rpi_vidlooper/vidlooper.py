@@ -109,6 +109,7 @@ class VidLooper(object):
 
             filename = self.videos[self.in_pins.index(pin)]
             if filename != self._active_vid or self.restart_on_press:
+                print (filename)
                 self._kill_process()
                 media = self._instance.media_new(filename)
                 self._player.set_media(media)
