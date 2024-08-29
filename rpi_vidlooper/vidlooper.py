@@ -91,7 +91,7 @@ class VidLooper(object):
         self.splash = splash
         self._splashproc = None
 
-        self._instance = vlc.Instance('--no-xlib --aout={}'.format(self.audio))
+        self._instance = vlc.Instance('--no-xlib --aout={} --file-caching=5000'.format(self.audio))
         self._player = self._instance.media_player_new()
 
     def _kill_process(self):
@@ -115,6 +115,12 @@ class VidLooper(object):
                 # Stop the current video playback
                 self._kill_process()
                 
+                if self.debug:
+                    print(f"Attempting to play file: {filename}")
+                    print(f"File exists: {os.path.exists(filename)}")
+                    print(f"File size: {os.path.getsize(filename)} bytes")
+                    print(f"VLC instance: {self._instance}")
+
                 # Create a new media object with the selected video file
                 media = self._instance.media_new(filename)
                 
