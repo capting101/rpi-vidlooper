@@ -11,7 +11,7 @@ from threading import Lock
 import signal
 import argparse
 import vlc
-
+from subprocess import call, Popen
 
 class _GpioParser(argparse.Action):
     """ Parse a GPIO spec string (see argparse setup later in this file) """
@@ -91,7 +91,7 @@ class VidLooper(object):
         self.splash = splash
         self._splashproc = None
 
-        self._instance = vlc.Instance('--aout={}'.format(self.audio))
+        self._instance = vlc.Instance('--no-xlib --aout={}'.format(self.audio))
         self._player = self._instance.media_player_new()
 
     def _kill_process(self):
@@ -109,16 +109,32 @@ class VidLooper(object):
 
             filename = self.videos[self.in_pins.index(pin)]
             if filename != self._active_vid or self.restart_on_press:
-                print (filename)
+                # Print the filename of the video being played
+                print(filename)
+                
+                # Stop the current video playback
                 self._kill_process()
+                
+                # Create a new media object with the selected video file
                 media = self._instance.media_new(filename)
+                
+                # Set the media for the player
                 self._player.set_media(media)
+                
+                # Start playing the new video
                 self._player.play()
+                
+                # Set the video output to the default display (0)
+                self._player.set_hwnd(0)
 
                 if self.loop:
+                    # Set the media again (this might be redundant)
                     self._player.set_media(media)
+                    
+                    # Add an option to repeat the video indefinitely
                     self._player.get_media().add_option("input-repeat=-1")
 
+                # Update the currently active video
                 self._active_vid = filename
 
     @property
